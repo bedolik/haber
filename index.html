@@ -143,15 +143,29 @@ async function setRead(c, v) {
   await sb.from("news_clusters").update({ is_read: v }).eq("id", c.id);
 }
 
+// Kart kapanırken okundu işaretlenir
+function closeCard(card, markRead = true) {
+  card.classList.remove("open");
+  const c = state.clusters.find((x) => x.id === Number(card.dataset.id));
+  if (markRead && c && !c.is_read) setRead(c, true);
+}
+
 $("list").addEventListener("click", async (e) => {
   if (e.target.closest("a")) return;
   const card = e.target.closest(".card");
   if (!card) return;
   const c = state.clusters.find((x) => x.id === Number(card.dataset.id));
-  if (e.target.closest("[data-act='unread']")) { await setRead(c, false); return; }
 
-  card.classList.toggle("open");
-  if (!card.classList.contains("open")) return;
+  if (e.target.closest("[data-act='unread']")) {
+    closeCard(card, false);
+    await setRead(c, false);
+    return;
+  }
+
+  if (card.classList.contains("open")) { closeCard(card); return; }
+  document.querySelectorAll(".card.open").forEach((x) => closeCard(x));
+  card.classList.add("open");
+
   const box = card.querySelector(".items");
   if (!box.dataset.loaded) {
     box.innerHTML = '<p class="status">Yükleniyor…</p>';
@@ -164,9 +178,7 @@ $("list").addEventListener("click", async (e) => {
       '<div class="actions"><button class="btn" data-act="unread">Okunmadı yap</button></div>';
     box.dataset.loaded = "1";
   }
-  if (!c.is_read) await setRead(c, true);
 });
-
 document.querySelectorAll("[data-min]").forEach((b) => b.onclick = () => { state.min = Number(b.dataset.min); savePrefs(); syncFilters(); render(); });
 $("cat").onchange = (e) => { state.cat = e.target.value; savePrefs(); render(); };
 $("unread").onclick = () => { state.unread = !state.unread; savePrefs(); syncFilters(); render(); };
