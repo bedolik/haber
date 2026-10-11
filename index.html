@@ -1,1 +1,197 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Haber Masası</title>
+<meta name="theme-color" content="#0f1115">
+<style>
+:root{--bg:#f5f6f8;--card:#fff;--text:#14161a;--muted:#6b7280;--line:#e5e7eb;--accent:#2563eb;--s5:#dc2626;--s4:#ea580c;--s3:#ca8a04;--s2:#9ca3af}
+@media (prefers-color-scheme:dark){:root{--bg:#0f1115;--card:#171a21;--text:#e8eaee;--muted:#9aa3b2;--line:#262b35;--accent:#60a5fa}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+header{position:sticky;top:0;z-index:5;background:var(--bg);border-bottom:1px solid var(--line);padding:12px 16px 10px}
+.top{display:flex;align-items:center;justify-content:space-between;gap:8px;max-width:760px;margin:0 auto}
+h1{font-size:18px;margin:0}
+.btn{border:1px solid var(--line);background:var(--card);color:var(--text);border-radius:8px;padding:6px 10px;font-size:13px;cursor:pointer}
+.filters{display:flex;gap:6px;overflow-x:auto;padding-top:10px;scrollbar-width:none;max-width:760px;margin:0 auto}
+.filters::-webkit-scrollbar{display:none}
+.chip{flex:none;border:1px solid var(--line);background:var(--card);color:var(--text);border-radius:999px;padding:5px 11px;font-size:13px;cursor:pointer}
+.chip.on{background:var(--text);color:var(--bg);border-color:var(--text)}
+main{padding:12px 16px 40px;max-width:760px;margin:0 auto}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px;margin-bottom:10px;display:flex;gap:12px;cursor:pointer}
+.card.read{opacity:.55}
+.score{flex:none;width:30px;height:30px;border-radius:8px;display:grid;place-items:center;font-weight:700;color:#fff;font-size:14px}
+.body{min-width:0;flex:1}
+.title{font-weight:600;margin:0 0 4px}
+.sum{margin:0 0 6px;opacity:.85;font-size:14px}
+.meta{color:var(--muted);font-size:12.5px;display:flex;flex-wrap:wrap;gap:4px 10px}
+.warn{color:var(--s4);font-weight:600}
+.items{display:none;margin-top:10px;border-top:1px solid var(--line);padding-top:6px}
+.card.open .items{display:block}
+.item{display:block;padding:7px 0;color:var(--text);text-decoration:none;font-size:14px;border-bottom:1px dashed var(--line)}
+.item b{color:var(--accent);font-weight:600;margin-right:6px}
+.item small{color:var(--muted);margin-left:6px}
+.actions{margin-top:8px}
+.empty,.status{color:var(--muted);text-align:center;padding:30px 0}
+#login{max-width:340px;margin:15vh auto;padding:0 16px;display:none}
+#login input{width:100%;padding:11px;margin:6px 0;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--text);font-size:15px}
+#login button{width:100%;padding:11px;margin-top:8px;border:0;border-radius:8px;background:var(--accent);color:#fff;font-size:15px;cursor:pointer}
+#app{display:none}
+</style>
+</head>
+<body>
+<div id="login">
+  <h1>Haber Masası</h1>
+  <input id="email" type="email" placeholder="E-posta" autocomplete="username">
+  <input id="pass" type="password" placeholder="Şifre" autocomplete="current-password">
+  <button id="loginBtn">Giriş yap</button>
+  <p id="loginErr" class="status"></p>
+</div>
 
+<div id="app">
+  <header>
+    <div class="top">
+      <h1>Haber Masası</h1>
+      <div>
+        <button class="btn" id="refresh">Yenile</button>
+        <button class="btn" id="logout">Çıkış</button>
+      </div>
+    </div>
+    <div class="filters">
+      <button class="chip" data-min="1">Tümü</button>
+      <button class="chip" data-min="3">3+</button>
+      <button class="chip" data-min="4">4+</button>
+      <button class="chip" data-min="5">5</button>
+      <select class="chip" id="cat"></select>
+      <button class="chip" id="unread">Okunmamış</button>
+    </div>
+  </header>
+  <main id="list"><p class="status">Yükleniyor…</p></main>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>
+const SUPABASE_URL = "https://wmsrmteyhpsjwvlwahnh.supabase.co";
+const SUPABASE_KEY = "sb_publishable_2kCfSVznVhIb4Q6l4-kQpQ_alQxfZNP";
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+const CATS = {"siyaset-tr":"Türkiye siyaseti","siyaset-dunya":"Dünya siyaseti","ekonomi":"Ekonomi","teknoloji":"Teknoloji","savunma-havacilik":"Savunma & havacılık","afet":"Afet","saglik":"Sağlık","diger":"Diğer"};
+const COLORS = {5:"var(--s5)",4:"var(--s4)",3:"var(--s3)"};
+const state = { min: 1, cat: "", unread: false, clusters: [] };
+try { const p = JSON.parse(localStorage.getItem("hm_prefs") || "{}"); Object.assign(state, { min: p.min ?? 1, cat: p.cat ?? "", unread: !!p.unread }); } catch {}
+
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+function ago(iso) {
+  const m = Math.floor((Date.now() - Date.parse(iso)) / 60000);
+  if (m < 1) return "az önce";
+  if (m < 60) return m + " dk";
+  const h = Math.floor(m / 60);
+  return h < 24 ? h + " sa" : Math.floor(h / 24) + " gün";
+}
+// Sıralama: önce puan, ama her 12 saat 1 puan kadar aşağı iter
+const rank = (c) => (c.max_score || 1) - (Date.now() - Date.parse(c.last_seen)) / 3600e3 / 12;
+
+$("cat").innerHTML = '<option value="">Tüm kategoriler</option>' +
+  Object.entries(CATS).map(([k, v]) => `<option value="${k}">${v}</option>`).join("");
+
+function savePrefs() {
+  try { localStorage.setItem("hm_prefs", JSON.stringify({ min: state.min, cat: state.cat, unread: state.unread })); } catch {}
+}
+function syncFilters() {
+  document.querySelectorAll("[data-min]").forEach((b) => b.classList.toggle("on", Number(b.dataset.min) === state.min));
+  $("unread").classList.toggle("on", state.unread);
+  $("cat").value = state.cat;
+}
+
+async function load() {
+  const since = new Date(Date.now() - 48 * 3600e3).toISOString();
+  const { data, error } = await sb.from("news_clusters")
+    .select("id,title,summary,category,max_score,source_count,unverified,last_seen,is_read")
+    .gte("last_seen", since).order("last_seen", { ascending: false }).limit(400);
+  if (error) { $("list").innerHTML = `<p class="status">Hata: ${esc(error.message)}</p>`; return; }
+  state.clusters = data;
+  render();
+}
+
+function render() {
+  const rows = state.clusters
+    .filter((c) => (c.max_score || 1) >= state.min && (!state.cat || c.category === state.cat) && (!state.unread || !c.is_read))
+    .sort((a, b) => rank(b) - rank(a));
+  if (!rows.length) { $("list").innerHTML = '<p class="empty">Gösterilecek haber yok.</p>'; return; }
+  $("list").innerHTML = rows.map((c) => `
+    <article class="card ${c.is_read ? "read" : ""}" data-id="${c.id}">
+      <div class="score" style="background:${COLORS[c.max_score] || "var(--s2)"}">${c.max_score ?? "–"}</div>
+      <div class="body">
+        <p class="title">${esc(c.title)}</p>
+        ${c.summary ? `<p class="sum">${esc(c.summary)}</p>` : ""}
+        <div class="meta">
+          <span>${esc(CATS[c.category] || c.category || "")}</span>
+          <span>${c.source_count} kaynak</span>
+          <span>${ago(c.last_seen)}</span>
+          ${c.unverified ? '<span class="warn">⚠️ Doğrulanmamış</span>' : ""}
+        </div>
+        <div class="items"></div>
+      </div>
+    </article>`).join("");
+}
+
+async function setRead(c, v) {
+  c.is_read = v;
+  document.querySelector(`.card[data-id="${c.id}"]`)?.classList.toggle("read", v);
+  await sb.from("news_clusters").update({ is_read: v }).eq("id", c.id);
+}
+
+$("list").addEventListener("click", async (e) => {
+  if (e.target.closest("a")) return;
+  const card = e.target.closest(".card");
+  if (!card) return;
+  const c = state.clusters.find((x) => x.id === Number(card.dataset.id));
+  if (e.target.closest("[data-act='unread']")) { await setRead(c, false); return; }
+
+  card.classList.toggle("open");
+  if (!card.classList.contains("open")) return;
+  const box = card.querySelector(".items");
+  if (!box.dataset.loaded) {
+    box.innerHTML = '<p class="status">Yükleniyor…</p>';
+    const { data, error } = await sb.from("news_items")
+      .select("title,url,published_at,fetched_at,news_sources(name)")
+      .eq("cluster_id", c.id).order("published_at", { ascending: true });
+    box.innerHTML = error ? `<p class="status">${esc(error.message)}</p>` :
+      data.map((it) => `<a class="item" href="${esc(it.url || "#")}" target="_blank" rel="noopener">
+        <b>${esc(it.news_sources?.name || "")}</b>${esc(it.title)}<small>${ago(it.published_at || it.fetched_at)}</small></a>`).join("") +
+      '<div class="actions"><button class="btn" data-act="unread">Okunmadı yap</button></div>';
+    box.dataset.loaded = "1";
+  }
+  if (!c.is_read) await setRead(c, true);
+});
+
+document.querySelectorAll("[data-min]").forEach((b) => b.onclick = () => { state.min = Number(b.dataset.min); savePrefs(); syncFilters(); render(); });
+$("cat").onchange = (e) => { state.cat = e.target.value; savePrefs(); render(); };
+$("unread").onclick = () => { state.unread = !state.unread; savePrefs(); syncFilters(); render(); };
+$("refresh").onclick = load;
+$("logout").onclick = async () => { await sb.auth.signOut(); location.reload(); };
+
+async function login() {
+  $("loginErr").textContent = "";
+  const { error } = await sb.auth.signInWithPassword({ email: $("email").value.trim(), password: $("pass").value });
+  if (error) $("loginErr").textContent = "Giriş başarısız: " + error.message; else showApp();
+}
+$("loginBtn").onclick = login;
+$("pass").addEventListener("keydown", (e) => { if (e.key === "Enter") login(); });
+
+function showApp() { $("login").style.display = "none"; $("app").style.display = "block"; syncFilters(); load(); }
+
+// Açık kart yokken her 2 dakikada ve uygulamaya geri dönünce yenile
+const autoLoad = () => { if (document.visibilityState === "visible" && $("app").style.display === "block" && !document.querySelector(".card.open")) load(); };
+setInterval(autoLoad, 120000);
+document.addEventListener("visibilitychange", autoLoad);
+
+(async () => {
+  const { data: { session } } = await sb.auth.getSession();
+  if (session) showApp(); else $("login").style.display = "block";
+})();
+</script>
+</body>
+</html>
