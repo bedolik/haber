@@ -1,6 +1,6 @@
 // Haber Masası service worker: sayfa dosyaları için "önce ağ, olmazsa önbellek".
 // Supabase çağrılarına dokunmaz; haber verisi her zaman canlı gelir.
-const CACHE = "haber-v2";
+const CACHE = "haber-v3";
 const SHELL = ["./", "./index.html", "./manifest.json", "./icon-192.png", "./icon-512.png", "./apple-touch-icon.png"];
 
 self.addEventListener("install", (e) => {

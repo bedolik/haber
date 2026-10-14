@@ -54,6 +54,9 @@ main{padding:12px 16px calc(40px + env(safe-area-inset-bottom));max-width:760px;
 #login input{width:100%;padding:11px;margin:6px 0;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--text);font-size:16px}
 #login button{width:100%;padding:11px;margin-top:8px;border:0;border-radius:8px;background:var(--accent);color:#fff;font-size:15px;cursor:pointer}
 #app{display:none}
+.tag{display:inline-block;background:var(--accent);color:#fff;border-radius:4px;padding:0 5px;font-size:11px;font-weight:600;margin-right:6px;vertical-align:1px}
+.note{display:block;color:var(--muted);font-size:13px;margin-top:2px}
+.upd{color:var(--accent);font-weight:600}
 .thumb{flex:none;width:72px;height:72px;border-radius:8px;object-fit:cover;background:var(--line)}
 </style>
 </head>
@@ -94,10 +97,10 @@ const SUPABASE_URL = "https://wmsrmteyhpsjwvlwahnh.supabase.co";
 const SUPABASE_KEY = "sb_publishable_2kCfSVznVhIb4Q6l4-kQpQ_alQxfZNP";
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
-const COLS = "id,title,summary,category,max_score,source_count,unverified,last_seen,image_url";
+const COLS = "id,title,summary,category,max_score,source_count,unverified,last_seen,last_update_at,updates,image_url";
 const CATS = {"siyaset-tr":"Türkiye siyaseti","siyaset-dunya":"Dünya siyaseti","ekonomi":"Ekonomi","teknoloji":"Teknoloji","savunma-havacilik":"Savunma & havacılık","afet":"Afet","saglik":"Sağlık","diger":"Diğer"};
 const COLORS = {5:"var(--s5)",4:"var(--s4)",3:"var(--s3)"};
-const state = { min: 1, cat: "", unread: false, clusters: [], digest: null, q: "", results: null, reads: new Set() };
+const state = { min: 1, cat: "", unread: false, clusters: [], digest: null, q: "", results: null, reads: new Map(), digestOpen: false };
 try { const p = JSON.parse(localStorage.getItem("hm_prefs") || "{}"); Object.assign(state, { min: p.min ?? 1, cat: p.cat ?? "", unread: !!p.unread }); } catch {}
 
 const $ = (id) => document.getElementById(id);
@@ -109,15 +112,27 @@ function ago(iso) {
   const h = Math.floor(m / 60);
   return h < 24 ? h + " sa" : Math.floor(h / 24) + " gün";
 }
-// Sıralama: önce puan, ama her 12 saat 1 puan kadar aşağı iter
-const rank = (c) => (c.max_score || 1) - (Date.now() - Date.parse(c.last_seen)) / 3600e3 / 12;
+function fmtTime(iso) {
+  if (Date.now() - Date.parse(iso) < 24 * 3600e3) return ago(iso);
+  return new Date(iso).toLocaleString("tr-TR", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+}
+// Sıralama: önce puan, ama son gelişmeden bu yana her 12 saat 1 puan kadar aşağı iter
+const rank = (c) => (c.max_score || 1) - (Date.now() - Date.parse(c.last_update_at)) / 3600e3 / 12;
 const findC = (id) => (state.results ?? []).find((x) => x.id === id) ?? state.clusters.find((x) => x.id === id);
-// Okundu bilgisi kişiye özel: news_reads tablosundan gelir
-const markReads = (list) => { for (const c of list) c.is_read = state.reads.has(c.id); return list; };
+// Okundu bilgisi kişiye özel (news_reads). Okunduktan sonra yeni gelişme gelen olay tekrar okunmamış olur.
+function markReads(list) {
+  for (const c of list) {
+    const r = state.reads.get(c.id);
+    c.readAt = r ?? null;
+    c.is_read = !!r && Date.parse(r) >= Date.parse(c.last_update_at);
+    c.upd = !!r && !c.is_read;
+  }
+  return list;
+}
 async function loadReads() {
   const since = new Date(Date.now() - 31 * 24 * 3600e3).toISOString();
-  const { data } = await sb.from("news_reads").select("cluster_id").gte("read_at", since).limit(10000);
-  state.reads = new Set((data ?? []).map((r) => r.cluster_id));
+  const { data } = await sb.from("news_reads").select("cluster_id,read_at").gte("read_at", since).limit(10000);
+  state.reads = new Map((data ?? []).map((r) => [r.cluster_id, r.read_at]));
 }
 
 $("cat").innerHTML = '<option value="">Tüm kategoriler</option>' +
@@ -135,7 +150,7 @@ function syncFilters() {
 async function load() {
   const since = new Date(Date.now() - 48 * 3600e3).toISOString();
   const [{ data, error }] = await Promise.all([
-    sb.from("news_clusters").select(COLS).gte("last_seen", since).order("last_seen", { ascending: false }).limit(400),
+    sb.from("news_clusters").select(COLS).gte("last_update_at", since).order("last_update_at", { ascending: false }).limit(400),
     loadReads(),
   ]);
   if (error) { $("list").innerHTML = `<p class="status">Hata: ${esc(error.message)}</p>`; return; }
@@ -170,6 +185,10 @@ async function runSearch() {
   state.results = markReads([...map.values()]);
   render();
 }
+document.addEventListener("toggle", (e) => {
+  if (e.target.classList?.contains("digest")) state.digestOpen = e.target.open;
+}, true);
+
 let qTimer;
 $("q").addEventListener("input", () => { clearTimeout(qTimer); qTimer = setTimeout(runSearch, 400); });
 function clearSearch() { $("q").value = ""; state.q = ""; state.results = null; render(); }
@@ -178,14 +197,14 @@ function digestHtml() {
   const d = state.digest;
   if (!d) return "";
   const label = new Date(d.digest_date + "T12:00:00").toLocaleDateString("tr-TR", { day: "numeric", month: "long" });
-  return `<details class="digest"><summary>📰 Günün özeti · ${label}</summary><div>${esc(d.content).replace(/^## (.+)$/gm, "<b>$1</b>")}</div></details>`;
+  return `<details class="digest"${state.digestOpen ? " open" : ""}><summary>📰 Günün özeti · ${label}</summary><div>${esc(d.content).replace(/^## (.+)$/gm, "<b>$1</b>")}</div></details>`;
 }
 
 function render() {
   const searching = state.results !== null;
   const rows = (searching ? state.results : state.clusters)
     .filter((c) => (c.max_score || 1) >= state.min && (!state.cat || c.category === state.cat) && (!state.unread || !c.is_read))
-    .sort(searching ? (a, b) => Date.parse(b.last_seen) - Date.parse(a.last_seen) : (a, b) => rank(b) - rank(a));
+    .sort(searching ? (a, b) => Date.parse(b.last_update_at) - Date.parse(a.last_update_at) : (a, b) => rank(b) - rank(a));
   const head = searching
     ? `<p class="hint">"${esc(state.q)}" için ${rows.length} sonuç · <button class="link" data-act="clearq">temizle</button></p>`
     : digestHtml();
@@ -199,7 +218,9 @@ function render() {
         <div class="meta">
           <span>${esc(CATS[c.category] || c.category || "")}</span>
           <span>${c.source_count} kaynak</span>
-          <span>${ago(c.last_seen)}</span>
+          ${c.updates ? `<span>${c.updates} gelişme</span>` : ""}
+          <span>${ago(c.last_update_at)}</span>
+          ${c.upd ? '<span class="upd">🔄 Yeni gelişme</span>' : ""}
           ${c.unverified ? '<span class="warn">⚠️ Doğrulanmamış</span>' : ""}
         </div>
         <div class="items"></div>
@@ -211,16 +232,35 @@ function render() {
 async function setRead(c, v) {
   for (const list of [state.clusters, state.results ?? []]) {
     const x = list.find((y) => y.id === c.id);
-    if (x) x.is_read = v;
+    if (x) { x.is_read = v; x.upd = false; if (!v) x.readAt = null; }
   }
-  document.querySelector(`.card[data-id="${c.id}"]`)?.classList.toggle("read", v);
+  const el = document.querySelector(`.card[data-id="${c.id}"]`);
+  el?.classList.toggle("read", v);
+  el?.querySelector(".upd")?.remove();
   if (v) {
-    state.reads.add(c.id);
-    await sb.from("news_reads").upsert({ cluster_id: c.id }, { onConflict: "user_id,cluster_id", ignoreDuplicates: true });
+    const now = new Date().toISOString();
+    state.reads.set(c.id, now);
+    await sb.from("news_reads").upsert({ cluster_id: c.id, read_at: now }, { onConflict: "user_id,cluster_id" });
   } else {
     state.reads.delete(c.id);
     await sb.from("news_reads").delete().eq("cluster_id", c.id);
   }
+}
+
+// Olayın haberleri: en yeni üstte, birebir aynı başlıklar tek satırda (kaynak adları yan yana)
+function itemsHtml(items, readAt, showNotes) {
+  const groups = new Map();
+  for (const it of items) {
+    const k = it.title_norm || it.url || it.title;
+    const g = groups.get(k);
+    if (g) { g.names.add(it.news_sources?.name); continue; }
+    groups.set(k, { ...it, names: new Set([it.news_sources?.name]) });
+  }
+  return [...groups.values()].map((g) => {
+    const isNew = readAt && Date.parse(g.fetched_at) > Date.parse(readAt);
+    return `<a class="item" href="${esc(g.url || "#")}" target="_blank" rel="noopener">
+      <b>${esc([...g.names].filter(Boolean).join(", "))}</b>${isNew ? '<span class="tag">yeni</span>' : ""}${esc(g.title)}<small>${fmtTime(g.published_at || g.fetched_at)}</small>${showNotes && g.summary ? `<span class="note">${esc(g.summary)}</span>` : ""}</a>`;
+  }).join("");
 }
 
 // Kart kapanırken okundu işaretlenir
@@ -262,11 +302,10 @@ $("list").addEventListener("click", async (e) => {
   if (!box.dataset.loaded) {
     box.innerHTML = '<p class="status">Yükleniyor…</p>';
     const { data, error } = await sb.from("news_items")
-      .select("title,url,published_at,fetched_at,news_sources(name)")
-      .eq("cluster_id", c.id).order("published_at", { ascending: true });
+      .select("title,title_norm,summary,url,published_at,fetched_at,news_sources(name)")
+      .eq("cluster_id", c.id).order("published_at", { ascending: false }).limit(80);
     box.innerHTML = error ? `<p class="status">${esc(error.message)}</p>` :
-      data.map((it) => `<a class="item" href="${esc(it.url || "#")}" target="_blank" rel="noopener">
-        <b>${esc(it.news_sources?.name || "")}</b>${esc(it.title)}<small>${ago(it.published_at || it.fetched_at)}</small></a>`).join("") +
+      itemsHtml(data, c.readAt, c.updates > 0) +
       '<div class="detail"></div><div class="actions"><button class="btn" data-act="detail">Detaylı özet</button><button class="btn" data-act="unread">Okunmadı yap</button></div>';
     box.dataset.loaded = "1";
   }
